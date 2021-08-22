@@ -30,6 +30,7 @@
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include <unordered_set>
 using namespace std;
 
 #define ARGS_CHECK(argc, val)       \
@@ -58,8 +59,8 @@ using namespace std;
     }
 
 /*****************************************结构体定义部分******************************************/
-#define IP "127.0.0.1"
-#define PORT 8888
+#define IP "172.21.0.7"
+#define PORT 2000
 #define THREADNUM 10
 #define MAXEVENTS 10
 

@@ -54,7 +54,7 @@ void *doingTask(void *arg)
 int childHandle(const Task &task)
 {
     MyDb db;
-    db.initDB("localhost", "test1", "test1", "Netdisk");
+    db.initDB("localhost", "root", "123", "Netdisk");
     int dataLen;
     char buf[1000] = {0};
     int ret;

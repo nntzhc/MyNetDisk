@@ -4,71 +4,41 @@
 #include "MyLog.h"
 #include "timer.h"
 
-Timer myTimer;                         //时间轮定时器
-#define TimeSLOT 60
-
+Timer myTimer;                         //轮询扫描
 vector<int> clients;                   //存储客户端的描述符
 unordered_map<string, int> name_to_fd; //<用户名称，描述符>
 int epfd = epoll_create(1);            //设置epoll
-static int pipefd[2];
 
-//清除socket的定时器，已登录数组中的socket
-void EraseSocket(int socket, bool IsClose = true) {
-    struct epoll_event ev;
-    ev.data.fd = socket;
-    ev.events = EPOLLIN;
-    int ret = epoll_ctl(epfd, EPOLL_CTL_DEL, socket, &ev);
-    if (ret == -1)
+//轮询函数
+void *ask(void *arg)
+{
+    unordered_map<int, time_t> *timeMap = (unordered_map<int, time_t> *)arg; //<用户fd,上一次发送包的时间>
+    while (1)
     {
-        perror("epoll_ctl");
-        pthread_exit(NULL);
+        for (auto &e : *timeMap)
+        {
+            time_t t;
+            time(&t);
+            if (t - e.second > 3)
+            {
+                cout << "客户端" << e.first << "超时未发送消息，断开！" << endl;
+                //取消监听并从clients, timeMap中删除
+                struct epoll_event ev;
+                ev.data.fd = e.first;
+                ev.events = EPOLLIN;
+                int ret = epoll_ctl(epfd, EPOLL_CTL_DEL, e.first, &ev);
+                if (ret == -1)
+                {
+                    perror("epoll_ctl");
+                    pthread_exit(NULL);
+                }
+                clients.erase(remove(clients.begin(), clients.end(), e.first), clients.end());
+                timeMap->erase(e.first);
+                close(e.first);
+            }
+            sleep(1);
+        }
     }
-    clients.erase(socket);
-    timeMap->erase(e.first);
-    if (IsClose) close(socket);
-}
-
-void sig_handler(int sig) {
-    int save_errno = errno;
-    int msg = sig;
-    sendCycle(pipefd[1], (char*)&msg, 1, 0);
-    errno = save_errno;
-}
-
-void timer_handler() {
-    myTimer.tick();
-    alarm(TimeSLOT);
-}
-
-void cb_func(int* Fd) {
-    int ret=epoll_ctl(epfd, EPOLL_CTL_DEL, *Fd, 0);
-    ERROR_CHECK(ret, -1, "Timer cb_Func");
-    EraseSocket(*Fd);
-    cout << "close fd: " << *Fd << endl;
-}
-
-int setnonblocking(int fd) {
-    int old_option = fcncl(fd, F_GETFL);
-    int new_option=old_option|O_NONBLOCK;
-    fcntl(fd, F_SETFL, new_option);
-    return old_option;
-}
-
-int addsig(int epollfd, int fd) {
-    struct sigaction sa;
-    memset(&sa, '\0', sizeof(sa));
-    sa.sa_handler = sig_handler;
-    sa.sa_flags |= SA_RESTART;
-    sigfillset(&sa.sa_mask);
-    assert(sigaction(sig, &sa, NULL) != -1);
-}
-
-void addfd(int epollfd, int fd) {
-    epoll_event event;
-    event.data.fd = fd;
-    event.enents=EPOLLIN|EPOLLET;
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
-    setnonblocking(fd);
 }
 
 int main()
@@ -84,30 +54,19 @@ int main()
     /******************设置epoll，监听sockfd与客户端描述符**********************/
     ERROR_CHECK(epfd, -1, "epoll_create");
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLRDHUP;
+    ev.events = EPOLLIN;
     ev.data.fd = sockfd;
     int ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev); //监听sockfd
     ERROR_CHECK(ret, -1, "epoll_ctl");
 
-    /******************定时器相关**********************/
-    ret = socketpair(PF_UNIX, SOCK_STREAM, 0, pipefd);
-    ERROR_CHECK(ret, -1, "socketpair");
-    setnonblocking(pipefd[1]);
-    addfd(epfd, pipefd[0]);
-    addsig(SIGALRM);
-    bool timeout = false;
-    alarm(TimeSLOT);
-
     /************************启动服务器,并连接服务器数据库************************************/
     chdir("../workspace/");
     MyDb db;
-    db.initDB("localhost", "test1", "test1", "Netdisk");
+    db.initDB("localhost", "root", "123", "Netdisk");
     string sql;
     int dataLen = 0;
     char buf[1000] = {0};
-
-    bool stop_server = false;
-    while (!stop_server)
+    while (1)
     {
         struct epoll_event evs[MAXEVENTS]; //需要监听sockfd, 以及所有accept的newfd
         int nfds = epoll_wait(epfd, evs, MAXEVENTS, 10000);
@@ -266,28 +225,6 @@ int main()
                 {
                     cout << "client quit" << endl;
                 }
-            }
-            else if ((sockfd == pipefd[0]) && (evs[i].events & EPOLLIN))
-            {
-            int sig;
-            char signals[1024];
-            ret = recvCycle(pipefd[0], signals, sizeof(signals), 0);
-            if (ret == -1 || ret==0) continue;
-            else {
-                for (int i = 0; i < ret; ++i) {
-                    if (signals[i] == SIGALRM) {
-                        timeout = true;
-                        break;
-                    }
-                    else {
-                        stop_server = true;
-                    }
-                }
-            }
-            }
-            else if (evs[i].events & EPOLLRDHUP)
-            {
-                EraseSocket(evs[i].data.fd);
             }
         }
 
@@ -464,11 +401,6 @@ int main()
                 }
             }
             myTimer.update(clients[i]);
-        }
-
-        if (timeout) {
-            timer_handler();
-            timeout = false;
         }
     }
     close(sockfd);
